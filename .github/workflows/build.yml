@@ -23,16 +23,25 @@ jobs:
       - name: Check shell scripts
         run: shellcheck -s bash bin/glibct install.sh share/bashrc tests/run-tests.sh
 
+      # libglibct.so is built for glibc, libglibct-termux.so with the
+      # Android NDK for Termux (Android 7 and newer).
       - name: Build
-        run: make dist CC=aarch64-linux-gnu-gcc CFLAGS="-O2 -Wall -Wextra -Werror"
+        run: |
+          make dist CC=aarch64-linux-gnu-gcc CFLAGS="-O2 -Wall -Wextra -Werror" \
+            TERMUX_CC="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang"
 
       # Termux has a newer glibc; the hook must not need anything newer
-      # than the glibc it was built against.
-      - name: Check the hook
+      # than the glibc it was built against. The Termux hook may only need
+      # Android's own libraries.
+      - name: Check the hooks
         run: |
           so=dist/glibct/lib/libglibct.so
           aarch64-linux-gnu-readelf -h "$so" | grep -q AArch64
           aarch64-linux-gnu-objdump -T "$so" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+          so=dist/glibct/lib/libglibct-termux.so
+          aarch64-linux-gnu-readelf -h "$so" | grep -q AArch64
+          aarch64-linux-gnu-readelf -d "$so" | grep NEEDED
+          ! aarch64-linux-gnu-readelf -d "$so" | grep NEEDED | grep -v -e 'libc\.so' -e 'libdl\.so'
 
       - name: Check the version
         if: startsWith(github.ref, 'refs/tags/v')

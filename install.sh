@@ -62,7 +62,14 @@ main() {
 	install -Dm755 "$tmp/glibct/bin/glibct" "$TERMUX_PREFIX/bin/glibct"
 	install -Dm644 "$tmp/glibct/share/bashrc" \
 		"$TERMUX_PREFIX/share/glibct/bashrc"
-	# Programs that are running keep the old file; new ones get the new one.
+	# Programs that are running keep the old files; new ones get the new
+	# ones. Releases before 1.1.0 have no Termux helper library.
+	if [ -f "$tmp/glibct/lib/libglibct-termux.so" ]; then
+		install -Dm755 "$tmp/glibct/lib/libglibct-termux.so" \
+			"$TERMUX_PREFIX/lib/libglibct-termux.so.new"
+		mv -f "$TERMUX_PREFIX/lib/libglibct-termux.so.new" \
+			"$TERMUX_PREFIX/lib/libglibct-termux.so"
+	fi
 	install -Dm755 "$tmp/glibct/lib/libglibct.so" \
 		"$GLIBC_PREFIX/lib/libglibct.so.new"
 	mv -f "$GLIBC_PREFIX/lib/libglibct.so.new" "$GLIBC_PREFIX/lib/libglibct.so"
@@ -73,7 +80,8 @@ main() {
 
 	echo
 	echo "$("$TERMUX_PREFIX/bin/glibct" --version) is installed."
-	echo "Type 'glibct' to open the glibc shell and 'exit' to leave it."
+	echo "Type 'glibct' to start it and 'exit' to leave it."
+	echo "Type 'glibct --doctor' if something does not work."
 }
 
 main "$@"

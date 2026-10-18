@@ -2,13 +2,15 @@
 # glibct: a Termux shell where every command runs with glibc.
 # https://github.com/ssfuisu/glibct
 
-GLIBCT_VERSION=1.0.0
+GLIBCT_VERSION=1.1.0
 TERMUX_PREFIX=/data/data/com.termux/files/usr
 GLIBC_PREFIX=$TERMUX_PREFIX/glibc
 GLIBC_BASH=$GLIBC_PREFIX/bin/bash
 HOOK=$GLIBC_PREFIX/lib/libglibct.so
+TERMUX_HOOK=$TERMUX_PREFIX/lib/libglibct-termux.so
 PRELOAD_FILE=$GLIBC_PREFIX/etc/ld.so.preload
 RCFILE=$TERMUX_PREFIX/share/glibct/bashrc
+INSTALLER=https://raw.githubusercontent.com/ssfuisu/glibct/main/install.sh
 
 usage() {
 	cat <<EOF
@@ -22,9 +24,11 @@ With a command, glibct runs only that command with glibc and exits.
 
 Options:
   -c STRING      run STRING in the glibc shell
+  --doctor       check that everything glibct needs is in place
+  --update       update glibct to the newest version
+  --uninstall    remove glibct (the glibc packages stay installed)
   -h, --help     show this help
   -V, --version  show the version
-  --uninstall    remove glibct (the glibc packages stay installed)
 EOF
 }
 
@@ -62,13 +66,116 @@ disable_hook() {
 	fi
 }
 
+# Removes the Termux hook from LD_PRELOAD of the programs this script starts.
+drop_termux_hook() {
+	local IFS=: entry keep=() entries=()
+	read -ra entries <<<"${LD_PRELOAD-}"
+	for entry in "${entries[@]}"; do
+		[ "$entry" = "$TERMUX_HOOK" ] || keep+=("$entry")
+	done
+	if [ ${#keep[@]} -eq 0 ]; then
+		unset LD_PRELOAD
+	else
+		export LD_PRELOAD="${keep[*]}"
+	fi
+}
+
 uninstall() {
+	# A Termux program with a missing library in LD_PRELOAD does not start.
+	drop_termux_hook
 	# Disable first: a listed but missing hook makes glibc print a warning
 	# for every program.
 	disable_hook
-	rm -f "$HOOK" "$RCFILE" "$TERMUX_PREFIX/bin/glibct"
+	rm -f "$HOOK" "$TERMUX_HOOK" "$RCFILE" "$TERMUX_PREFIX/bin/glibct"
 	rmdir "$TERMUX_PREFIX/share/glibct" 2>/dev/null
 	echo "glibct is removed. The glibc packages are still installed."
+	echo "Close the glibct shells that are still open with 'exit'."
+}
+
+update() {
+	local tmp rc
+	tmp=$(mktemp "$TERMUX_PREFIX/tmp/glibct-update.XXXXXX") || exit 1
+	if ! curl -fsSL -o "$tmp" "$INSTALLER"; then
+		rm -f "$tmp"
+		die "cannot download the installer, check the internet connection"
+	fi
+	"$TERMUX_PREFIX/bin/bash" "$tmp"
+	rc=$?
+	rm -f "$tmp"
+	exit "$rc"
+}
+
+# --doctor: one line per check, in words that need no knowledge of Linux.
+doctor() {
+	local problems=0 v
+	ok() { printf '  ok       %s\n' "$1"; }
+	note() { printf '  note     %s\n' "$1"; }
+	problem() {
+		printf '  PROBLEM  %s\n           Fix: %s\n' "$1" "$2"
+		problems=$((problems + 1))
+	}
+
+	echo "glibct $GLIBCT_VERSION checkup"
+	echo
+	if [ "$(uname -m)" = aarch64 ]; then
+		ok "64-bit ARM device (Android $(getprop ro.build.version.release 2>/dev/null))"
+	else
+		problem "this device is $(uname -m), glibct needs 64-bit ARM (aarch64)" \
+			"none, glibct cannot work on this device"
+	fi
+	if [ -e "$GLIBC_PREFIX/lib/ld-linux-aarch64.so.1" ]; then
+		v=$(env -u LD_PRELOAD "$GLIBC_PREFIX/bin/ldd" --version 2>/dev/null)
+		v=${v%%$'\n'*}
+		ok "glibc is installed (${v##* })"
+	else
+		problem "glibc is not installed" "pkg install glibc-repo && pkg install glibc"
+	fi
+	if [ -x "$GLIBC_BASH" ]; then
+		ok "the glibc shell (bash-glibc) is installed"
+	else
+		problem "the glibc shell is not installed" "pkg install bash-glibc"
+	fi
+	if [ -x "$GLIBC_PREFIX/bin/ls" ]; then
+		ok "the basic glibc tools (coreutils-glibc) are installed"
+	else
+		note "the basic glibc tools are not installed, Termux's are used: pkg install coreutils-glibc"
+	fi
+	if [ ! -f "$HOOK" ]; then
+		problem "the glibct library is missing" "glibct --update"
+	elif hook_enabled; then
+		ok "the glibct library is installed and turned on"
+	else
+		enable_hook
+		ok "the glibct library was turned off, it is turned on again"
+	fi
+	if [ -f "$TERMUX_HOOK" ]; then
+		ok "the Termux helper library is installed"
+	else
+		problem "the Termux helper library is missing" "glibct --update"
+	fi
+	if [ -x "$GLIBC_BASH" ] && [ -f "$HOOK" ] && (
+		setup_env
+		# shellcheck disable=SC2016 # expanded by the glibc bash
+		"$GLIBC_BASH" -c 'while read -r l; do
+			case $l in *libglibct.so*) exit 0 ;; esac
+		done </proc/self/maps; exit 1'
+	); then
+		ok "a test command ran with glibc and the glibct library"
+	else
+		problem "a test command did not run with glibc" "glibct --update"
+	fi
+	if [ -x "$GLIBC_PREFIX/bin/box64" ]; then
+		ok "box64 is installed, programs for x86_64 PCs can run"
+	else
+		note "box64 is not installed, programs for x86_64 PCs cannot run: pkg install box64-glibc"
+	fi
+	echo
+	if [ "$problems" -eq 0 ]; then
+		echo "Everything glibct needs is in place."
+	else
+		echo "$problems problem(s) found, see the Fix lines above."
+		return 1
+	fi
 }
 
 check_install() {
@@ -99,6 +206,7 @@ setup_env() {
 	# The hook gives Termux programs these values back. Keep the first
 	# ones when glibct is started again from a program inside glibct.
 	if [ "${GLIBCT-}" != 1 ]; then
+		drop_termux_hook
 		export GLIBCT_TERMUX_LD_PRELOAD="${LD_PRELOAD-}"
 		export GLIBCT_TERMUX_SHELL="${SHELL-}"
 		if [ -n "${LD_LIBRARY_PATH+set}" ]; then
@@ -127,6 +235,13 @@ case "${1-}" in
 --uninstall)
 	uninstall
 	exit 0
+	;;
+--update)
+	update
+	;;
+--doctor)
+	doctor
+	exit
 	;;
 -c)
 	[ $# -ge 2 ] || die "-c needs a command string"

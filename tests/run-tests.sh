@@ -70,12 +70,23 @@ fi
 
 # probe and spawn are built twice: for Termux glibc and, with the loader path
 # of a regular Linux system, as stand-ins for downloaded Linux programs.
-for prog in probe spawn; do
+for prog in probe spawn syscalls; do
 	"$G/bin/gcc" -O2 -o "$T/$prog" "$HERE/$prog.c" || exit 1
 	"$G/bin/gcc" -O2 -Wl,--dynamic-linker=/lib/ld-linux-aarch64.so.1 \
 		-o "$T/$prog-linux" "$HERE/$prog.c" || exit 1
 done
 "$G/bin/gcc" -O2 -static -o "$T/spawn-static" "$HERE/spawn.c" 2>/dev/null
+# The same spawn program built for Termux (Bionic), if clang is installed.
+"$TERMUX_PREFIX/bin/clang" -O2 --target=aarch64-linux-android28 \
+	-o "$T/spawn-termux" "$HERE/spawn.c" 2>/dev/null
+# A tiny program for x86_64 PCs that prints "x86 ok".
+base64 -d >"$T/x86hello" <<'EOF64'
+f0VMRgIBAQAAAAAAAAAAAAIAPgABAAAAeABAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAEAAOAAB
+AAAAAAAAAAEAAAAFAAAAAAAAAAAAAAAAAEAAAAAAAAAAQAAAAAAAoAAAAAAAAACgAAAAAAAAAAAQ
+AAAAAAAAuAEAAAC/AQAAAEiNNRAAAAC6BwAAAA8FuDwAAAAx/w8FeDg2IG9rCg==
+EOF64
+chmod +x "$T/x86hello"
+HELPER=$TERMUX_PREFIX/lib/libglibct-termux.so
 
 echo "== environment"
 check "GLIBCT is set" "GLIBCT=1" -- env
@@ -142,12 +153,12 @@ script loop1 "#!$T/loop2" ''
 script loop2 "#!$T/loop1" ''
 check "#! loop stops" "Too many levels" -- "$T/spawn" execv "$T/loop1"
 script termux "#!$TERMUX_PREFIX/bin/sh" 'echo "termux sh: ${LD_PRELOAD-none}"'
-check "#! with a Termux shell" "termux sh: $GLIBCT_TERMUX_LD_PRELOAD" -- \
-	"$T/termux"
+check "#! with a Termux shell" \
+	"termux sh: $HELPER:$GLIBCT_TERMUX_LD_PRELOAD" -- "$T/termux"
 
 echo "== Termux (Bionic) programs"
-check "get the Termux LD_PRELOAD back" \
-	"LD_PRELOAD=$GLIBCT_TERMUX_LD_PRELOAD" -- \
+check "get the Termux LD_PRELOAD back, with the helper in front" \
+	"LD_PRELOAD=$HELPER:$GLIBCT_TERMUX_LD_PRELOAD" -- \
 	"$TERMUX_PREFIX/bin/env"
 check "get a PATH without glibc" "path ok" -- "$TERMUX_PREFIX/bin/bash" -c \
 	"case :\$PATH: in *:$G/bin:*) echo bad;; *) echo path ok;; esac"
@@ -161,7 +172,56 @@ if [ -x "$T/spawn-static" ]; then
 		"$T/spawn-static" execv "$TERMUX_PREFIX/bin/true"
 fi
 
+check "Termux scripts still use Termux programs" "$TERMUX_PREFIX/bin/bash" -- \
+	"$TERMUX_PREFIX/bin/bash" -c "'$T/envbash'"
+
+echo "== Termux programs that start glibc programs"
+check "start a glibc program" "$G/bin/bash" -- "$TERMUX_PREFIX/bin/bash" -c \
+	"$G/bin/bash -c 'readlink /proc/\$\$/exe; true'"
+check "the glibc program gets the glibc environment back" \
+	"$G/bin:$TERMUX_PREFIX/bin" "SHELL=$G/bin/bash" "LD_PRELOAD=[]" -- \
+	"$TERMUX_PREFIX/bin/bash" -c "$G/bin/bash -c 'echo \"PATH=\$PATH\"; \
+	echo SHELL=\$SHELL; echo \"LD_PRELOAD=[\${LD_PRELOAD-}]\"'"
+check "start a Linux program" "exe=$T/probe-linux" -- \
+	"$TERMUX_PREFIX/bin/bash" -c "'$T/probe-linux'"
+if [ -x "$T/spawn-termux" ]; then
+	for m in execv posix_spawn; do
+		check "$m" "exe=$T/probe-linux" -- \
+			"$T/spawn-termux" "$m" "$T/probe-linux"
+	done
+	for m in execvp vfork posix_spawnp; do
+		check "$m (PATH search)" "exe=$T/probe-linux" -- \
+			env PATH="$T:$PATH" "$T/spawn-termux" "$m" probe-linux
+	done
+fi
+if [ -x "$TERMUX_PREFIX/bin/make" ]; then
+	mkdir "$T/mk"
+	printf 'int main(void) { return 42; }\n' >"$T/mk/hello.c"
+	printf 'hello: hello.c\n\t%s -o hello hello.c\n' "$G/bin/gcc" \
+		>"$T/mk/Makefile"
+	check_exit "Termux make runs the glibc gcc" 42 "$TERMUX_PREFIX/bin/bash" -c \
+		"PATH='$TERMUX_PREFIX/bin' '$TERMUX_PREFIX/bin/make' -s -C '$T/mk' && '$T/mk/hello'"
+fi
+
+echo "== system calls that Android blocks"
+for prog in syscalls syscalls-linux; do
+	check "$prog gets 'not supported' instead of being killed" \
+		"syscall 437: ret=-1 Function not implemented" \
+		"syscall 451: ret=-1 Function not implemented" \
+		"syscall 289: ret=-1 Function not implemented" -- "$T/$prog"
+done
+
+echo "== programs for x86_64 PCs"
+if [ -x "$G/bin/box64" ]; then
+	check "run with box64" "x86 ok" -- "$T/x86hello"
+	check "run with box64 from a Termux program" "x86 ok" -- \
+		"$TERMUX_PREFIX/bin/bash" -c "'$T/x86hello'"
+else
+	check_exit "without box64 they do not run" 126 "$T/x86hello"
+fi
+
 echo "== the glibct command"
+check "--doctor" "Everything glibct needs is in place" -- glibct --doctor
 check "arguments are passed unchanged" "a b|c|" -- glibct printf '%s|' 'a b' c
 check_exit "exit code" 7 glibct sh -c 'exit 7'
 check_exit "unknown command" 127 glibct glibct-no-such-command
