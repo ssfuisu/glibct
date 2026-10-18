@@ -21,7 +21,7 @@ die() {
 # Everything runs inside main, so bash has read the whole script before
 # pkg or curl could read from the pipe that feeds it.
 main() {
-	local version=${GLIBCT_VERSION:-latest} url tmp missing=()
+	local version=${GLIBCT_VERSION:-latest} url missing=()
 
 	if [ ! -d "$TERMUX_PREFIX" ] || [ "${PREFIX-}" != "$TERMUX_PREFIX" ]; then
 		die "this installer only works in Termux"
@@ -47,6 +47,7 @@ main() {
 	else
 		url="https://github.com/$REPO/releases/download/$version"
 	fi
+	# Not local: the EXIT trap runs after main has returned.
 	tmp=$(mktemp -d "$TERMUX_PREFIX/tmp/glibct-install.XXXXXX")
 	trap 'rm -rf "$tmp"' EXIT
 
