@@ -37,6 +37,10 @@
 
 #include "common.h"
 
+#ifndef SYS_SECCOMP
+#define SYS_SECCOMP 1 /* si_code of a seccomp SIGSYS; older headers lack it */
+#endif
+
 static int (*real_execve)(const char *, char *const[], char *const[]);
 static int (*real_posix_spawn)(pid_t *, const char *, const void *,
 			       const void *, char *const[], char *const[]);
