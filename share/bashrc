@@ -1,0 +1,36 @@
+# Startup file of the glibct shell.
+#
+# glibct starts the glibc bash with --rcfile pointing here. Bash reads the
+# glibc system file $PREFIX/glibc/etc/bash.bashrc first.
+
+# The glibc system file sets the terminal title on every prompt; a normal
+# Termux shell does not.
+unset PROMPT_COMMAND
+
+# History works like in a normal Termux shell and uses the same file.
+shopt -s histappend
+shopt -s histverify
+
+# Personal settings, the same ones a normal Termux shell reads.
+if [ -r "$HOME/.bashrc" ]; then
+	export GLIBCT_STARTING=1
+	# shellcheck source=/dev/null
+	. "$HOME/.bashrc"
+	unset GLIBCT_STARTING
+fi
+
+# Suggest packages for unknown commands, like Termux does.
+if [ -x /data/data/com.termux/files/usr/libexec/termux/command-not-found ] &&
+	! declare -F command_not_found_handle >/dev/null; then
+	command_not_found_handle() {
+		/data/data/com.termux/files/usr/libexec/termux/command-not-found "$1"
+	}
+fi
+
+PS1='glibct\$ '
+
+# Settings only for the glibct shell, for example your own PS1.
+if [ -r "$HOME/.glibctrc" ]; then
+	# shellcheck source=/dev/null
+	. "$HOME/.glibctrc"
+fi

@@ -1,0 +1,57 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu shellcheck
+
+      - name: Check shell scripts
+        run: shellcheck -s bash bin/glibct install.sh share/bashrc tests/run-tests.sh
+
+      - name: Build
+        run: make dist CC=aarch64-linux-gnu-gcc CFLAGS="-O2 -Wall -Wextra -Werror"
+
+      # Termux has a newer glibc; the hook must not need anything newer
+      # than the glibc it was built against.
+      - name: Check the hook
+        run: |
+          so=dist/glibct/lib/libglibct.so
+          aarch64-linux-gnu-readelf -h "$so" | grep -q AArch64
+          aarch64-linux-gnu-objdump -T "$so" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+
+      - name: Check the version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          grep -qx "GLIBCT_VERSION=${GITHUB_REF_NAME#v}" bin/glibct ||
+            { echo "bin/glibct does not say version ${GITHUB_REF_NAME#v}"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: glibct-aarch64
+          path: |
+            dist/glibct-aarch64.tar.gz
+            dist/SHA256SUMS
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/glibct-aarch64.tar.gz dist/SHA256SUMS \
+            --title "glibct ${GITHUB_REF_NAME#v}" --generate-notes

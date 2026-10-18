@@ -1,0 +1,155 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# glibct: a Termux shell where every command runs with glibc.
+# https://github.com/ssfuisu/glibct
+
+GLIBCT_VERSION=1.0.0
+TERMUX_PREFIX=/data/data/com.termux/files/usr
+GLIBC_PREFIX=$TERMUX_PREFIX/glibc
+GLIBC_BASH=$GLIBC_PREFIX/bin/bash
+HOOK=$GLIBC_PREFIX/lib/libglibct.so
+PRELOAD_FILE=$GLIBC_PREFIX/etc/ld.so.preload
+RCFILE=$TERMUX_PREFIX/share/glibct/bashrc
+
+usage() {
+	cat <<EOF
+Usage: glibct [COMMAND [ARGS...]]
+       glibct -c STRING [ARGS...]
+
+Without arguments, glibct opens a shell where every command runs with glibc.
+Type 'exit' to go back to the normal Termux shell.
+
+With a command, glibct runs only that command with glibc and exits.
+
+Options:
+  -c STRING      run STRING in the glibc shell
+  -h, --help     show this help
+  -V, --version  show the version
+  --uninstall    remove glibct (the glibc packages stay installed)
+EOF
+}
+
+die() {
+	printf 'glibct: %s\n' "$*" >&2
+	exit 1
+}
+
+# The glibc loader reads $PRELOAD_FILE and loads the hook into every glibc
+# program. Android's linker never reads that file.
+hook_enabled() {
+	local line
+	[ -r "$PRELOAD_FILE" ] || return 1
+	while IFS= read -r line || [ -n "$line" ]; do
+		[ "$line" = "$HOOK" ] && return 0
+	done <"$PRELOAD_FILE"
+	return 1
+}
+
+enable_hook() {
+	hook_enabled || printf '%s\n' "$HOOK" >>"$PRELOAD_FILE" ||
+		die "cannot write $PRELOAD_FILE"
+}
+
+disable_hook() {
+	local line keep=()
+	[ -f "$PRELOAD_FILE" ] || return 0
+	while IFS= read -r line || [ -n "$line" ]; do
+		[ "$line" = "$HOOK" ] || keep+=("$line")
+	done <"$PRELOAD_FILE"
+	if [ ${#keep[@]} -eq 0 ]; then
+		rm -f "$PRELOAD_FILE"
+	else
+		printf '%s\n' "${keep[@]}" >"$PRELOAD_FILE"
+	fi
+}
+
+uninstall() {
+	# Disable first: a listed but missing hook makes glibc print a warning
+	# for every program.
+	disable_hook
+	rm -f "$HOOK" "$RCFILE" "$TERMUX_PREFIX/bin/glibct"
+	rmdir "$TERMUX_PREFIX/share/glibct" 2>/dev/null
+	echo "glibct is removed. The glibc packages are still installed."
+}
+
+check_install() {
+	[ -x "$GLIBC_BASH" ] ||
+		die "glibc bash is missing, install it with: pkg install bash-glibc"
+	[ -f "$HOOK" ] || die "$HOOK is missing, please reinstall glibct"
+	enable_hook
+}
+
+# PATH with $GLIBC_PREFIX/bin right before $TERMUX_PREFIX/bin, so glibc
+# programs win over Termux programs of the same name.
+glibc_path() {
+	local IFS=: dir added='' out=() dirs=()
+	read -ra dirs <<<"$PATH"
+	for dir in "${dirs[@]}"; do
+		[ "$dir" = "$GLIBC_PREFIX/bin" ] && continue
+		if [ -z "$added" ] && [ "$dir" = "$TERMUX_PREFIX/bin" ]; then
+			out+=("$GLIBC_PREFIX/bin")
+			added=1
+		fi
+		out+=("$dir")
+	done
+	[ -n "$added" ] || out=("$GLIBC_PREFIX/bin" "${out[@]}")
+	printf '%s' "${out[*]}"
+}
+
+setup_env() {
+	# The hook gives Termux programs these values back. Keep the first
+	# ones when glibct is started again from a program inside glibct.
+	if [ "${GLIBCT-}" != 1 ]; then
+		export GLIBCT_TERMUX_LD_PRELOAD="${LD_PRELOAD-}"
+		export GLIBCT_TERMUX_SHELL="${SHELL-}"
+		if [ -n "${LD_LIBRARY_PATH+set}" ]; then
+			export GLIBCT_TERMUX_LD_LIBRARY_PATH="$LD_LIBRARY_PATH"
+		else
+			unset GLIBCT_TERMUX_LD_LIBRARY_PATH
+		fi
+	fi
+	# Termux's LD_PRELOAD holds Android libraries; glibc cannot load them.
+	unset LD_PRELOAD LD_LIBRARY_PATH
+	PATH=$(glibc_path)
+	export PATH
+	export SHELL="$GLIBC_BASH"
+	export GLIBCT=1
+}
+
+case "${1-}" in
+-h | --help)
+	usage
+	exit 0
+	;;
+-V | --version)
+	echo "glibct $GLIBCT_VERSION"
+	exit 0
+	;;
+--uninstall)
+	uninstall
+	exit 0
+	;;
+-c)
+	[ $# -ge 2 ] || die "-c needs a command string"
+	;;
+-*)
+	die "unknown option '$1', see 'glibct --help'"
+	;;
+esac
+
+check_install
+
+if [ $# -eq 0 ]; then
+	# A 'glibct' line in ~/.bashrc must not start a second shell while
+	# the glibct shell reads ~/.bashrc.
+	[ -n "${GLIBCT_STARTING-}" ] && exit 0
+	setup_env
+	exec -a glibct "$GLIBC_BASH" --rcfile "$RCFILE"
+fi
+
+setup_env
+if [ "$1" = -c ]; then
+	shift
+	exec -a glibct "$GLIBC_BASH" -c "$@"
+fi
+# shellcheck disable=SC2016 # $@ is expanded by the glibc bash
+exec -a glibct "$GLIBC_BASH" -c 'exec "$@"' glibct "$@"
