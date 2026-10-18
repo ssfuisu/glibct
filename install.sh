@@ -23,8 +23,9 @@ die() {
 main() {
 	local version=${GLIBCT_VERSION:-latest} url tmp missing=()
 
-	[ -d "$TERMUX_PREFIX" ] && [ "${PREFIX-}" = "$TERMUX_PREFIX" ] ||
+	if [ ! -d "$TERMUX_PREFIX" ] || [ "${PREFIX-}" != "$TERMUX_PREFIX" ]; then
 		die "this installer only works in Termux"
+	fi
 	[ "$(uname -m)" = aarch64 ] ||
 		die "glibct supports 64-bit ARM (aarch64) devices only"
 
